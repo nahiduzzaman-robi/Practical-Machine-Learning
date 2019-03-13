@@ -1,0 +1,109 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "Md. Nahiduzzaman"
+date: "Mar 13, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(e1071)
+library(randomForest)
+library(caret)
+```
+
+## Get Data
+
+Data for this assignment comes from [Groupare@LES Project for Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har). There are 2 CSV files - one with training data and second with testing data.
+
+Based on the description for the assignment and dataset: the data consists of numerous measurements for Unilateral Dumbbell Bicep Curls.
+
+> Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+> Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+From assignment description:
+
+> In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+Let's load and look at the data a bit
+
+```{r loadData}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+str(training)
+```
+
+Looks like there is a lot of missing data. Before I delve deeper, let's figure out what is the goal.
+
+## The Question:
+
+> The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+So I need to predict `classe` based on other observations. Measurements directly related to the motion will be more relevant to our model. Based on the column names above - I have numerous observations of the forearm, belt, dumbbell. They are broken down by user, classe, time windown. The main goal is to isolate the movement by how it is done across different people and times. So, the main grouping can be done based on bodypart (as opposed to specific users, timeframes).
+
+```{r factors}
+levels(training$user_name)
+levels(training$classe)
+```
+
+## Cleanup
+
+Let's remove `NA` values first, then look at how the movement classes show themselves in the observations. Reload the data with `NA` columns removed for both datasets to keep it consistent. This will narrow down the amount of variables down to 60.
+
+```{r cleanup}
+training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!", ""))
+training <- training[, colSums(is.na(training)) == 0]
+testing <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!", ""))
+testing <- testing[, colSums(is.na(testing)) == 0]
+names(training)
+```
+
+Next, let's look at how different groups of observations(belt, forearm, arm) map to different movement classes. This is the exploratory analysis part.
+
+```{r exploratoryPlots, echo=FALSE}
+featurePlot(x = training[,c("roll_belt", "pitch_belt", "yaw_belt", "total_accel_belt")], y = training$classe, plot = "box")
+featurePlot(x = training[,c("roll_forearm", "pitch_forearm", "yaw_forearm", "total_accel_forearm")], y = training$classe, plot = "box")
+featurePlot(x = training[,c("roll_arm", "pitch_arm", "yaw_arm", "total_accel_arm")], y = training$classe, plot = "box")
+```
+
+I can see that there are marked differences between movements of certain bodyparts depending on the class: e.g. there's almost no movement of the belt for class `A` movement, and there's much more yaw and roll of the forearm for movement `C`. This gives me a good idea that we might be able to isolate specific components for these movements. Let's get into it.
+
+## Models!
+
+Using the information above as a pointer, let's create some random forest models based on the movements of specific bodyparts. Starting with the belt:
+
+```{r modelBeltRF}
+modBelt_rf <- train(classe ~ roll_belt + pitch_belt + yaw_belt, method = "rf", data = training, ntree = 20)
+predBelt_rf <- predict(modBelt_rf, training)
+sum(training$classe == predBelt_rf) / length(predBelt_rf)
+```
+
+So that's a pretty good predictor. How about the forearm?
+
+```{r modelForearmRF}
+modForearm_rf <- train(classe ~ roll_forearm + pitch_forearm + yaw_forearm, method = "rf", data = training, ntree = 20)
+predForearm_rf <- predict(modForearm_rf, training)
+sum(training$classe == predForearm_rf) / length(predForearm_rf)
+```
+
+Not so good, mainly because one would expect the forearm to be the primary movement in the curl. However, if you've ever been in the gym - you'd see a lot of people doing interesting things with their forearms during the curls. In any case - we're looking for "extraneous" movements of the body - meaning that movement in _other_ parts of the body are, naturally, what determines the level on _incorrectness_.
+
+Moving on to the whole (?) arm:
+
+```{r modelArmRF}
+modArm_rf <- train(classe ~ roll_arm + pitch_arm + yaw_arm, method = "rf", data = training, ntree = 20)
+predArm_rf <- predict(modArm_rf, training)
+sum(training$classe == predArm_rf) / length(predArm_rf)
+```
+
+Not reflected here are my attempts using different modeling methods: generalized boosted model, linear discriminant analysis, lasso, and a few others. They resulted in much lower accuracy (below 80%) even with such a large training set.
+
+I left out the measurements of the dumbbell movement mainly because the questions was in relation to how the _body_ movement is measured and not how the _object_ movement is measured. This might reduce the accuracy of my models, but I posit that it exposes the weakness of measurement methods.
+
+## Testing
+
+Let's see what happens when I apply our models to the testing dataset.
+
+```{r testiModels}
+predBeltTest <- predict(modBelt_rf, testing)
+predForearmTest <- predict(modForearm_rf, testing)
+predArmTest <- predict(modArm_rf, testing)
+table(predBeltTest, predForearmTest, predArmTest)
+```
